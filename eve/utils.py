@@ -10,15 +10,13 @@
     :license: BSD, see LICENSE for more details.
 """
 
-import sys
 import eve
 import hashlib
-import werkzeug.exceptions
 from flask import request
 from flask import current_app as app
 from datetime import datetime, timedelta
 from bson.json_util import dumps
-from eve import RFC1123_DATE_FORMAT
+import werkzeug.exceptions
 
 
 class Config(object):
@@ -44,9 +42,6 @@ config = Config()
 
 class ParsedRequest(object):
     """ This class, by means of its attributes, describes a client request.
-
-    .. versuinchanged;; 9,5
-       'args' keyword.
 
     .. versonchanged:: 0.1.0
        'embedded' keyword.
@@ -82,19 +77,12 @@ class ParsedRequest(object):
     # `embedded` value of the query string (?embedded). Defaults to None.
     embedded = None
 
-    # `args` value of the original request. Defaults to None.
-    args = None
-
 
 def parse_request(resource):
     """ Parses a client request, returning instance of :class:`ParsedRequest`
     containing relevant request data.
 
     :param resource: the resource currently being accessed by the client.
-
-    .. versionchanged:: 0.5
-       Support for custom query parameters via configuration settings.
-       Minor DRY updates.
 
     .. versionchagend:: 0.1.0
        Support for embedded documents.
@@ -109,32 +97,30 @@ def parse_request(resource):
     headers = request.headers
 
     r = ParsedRequest()
-    r.args = args
 
-    settings = config.DOMAIN[resource]
-    if settings['allowed_filters']:
-        r.where = args.get(config.QUERY_WHERE)
-    if settings['projection']:
-        r.projection = args.get(config.QUERY_PROJECTION)
-    if settings['sorting']:
-        r.sort = args.get(config.QUERY_SORT)
-    if settings['embedding']:
-        r.embedded = args.get(config.QUERY_EMBEDDED)
+    if config.DOMAIN[resource]['allowed_filters']:
+        r.where = args.get('where')
+    if config.DOMAIN[resource]['projection']:
+        r.projection = args.get('projection')
+    if config.DOMAIN[resource]['sorting']:
+        r.sort = args.get('sort')
+    if config.DOMAIN[resource]['embedding']:
+        r.embedded = args.get('embedded')
 
     max_results_default = config.PAGINATION_DEFAULT if \
-        settings['pagination'] else 0
+        config.DOMAIN[resource]['pagination'] else 0
     try:
-        r.max_results = int(float(args[config.QUERY_MAX_RESULTS]))
+        r.max_results = int(float(args['max_results']))
         assert r.max_results > 0
     except (ValueError, werkzeug.exceptions.BadRequestKeyError,
             AssertionError):
         r.max_results = max_results_default
 
-    if settings['pagination']:
+    if config.DOMAIN[resource]['pagination']:
         # TODO should probably return a 400 if 'page' is < 1 or non-numeric
-        if config.QUERY_PAGE in args:
+        if 'page' in args:
             try:
-                r.page = abs(int(args.get(config.QUERY_PAGE))) or 1
+                r.page = abs(int(args.get('page'))) or 1
             except ValueError:
                 pass
 
@@ -162,13 +148,11 @@ def weak_date(date):
 
     :param date: the date to be adjusted.
     """
-    return datetime.strptime(date, RFC1123_DATE_FORMAT) + \
-        timedelta(seconds=1) if date else None
+    return str_to_date(date) + timedelta(seconds=1) if date else None
 
 
 def str_to_date(string):
-    """ Converts a date string formatted as defined in the configuration
-        to the corresponding datetime value.
+    """ Converts a RFC-1123 string to the corresponding datetime value.
 
     :param string: the RFC-1123 string to convert to datetime value.
     """
@@ -176,31 +160,60 @@ def str_to_date(string):
 
 
 def date_to_str(date):
-    """ Converts a datetime value to the format defined in the configuration file.
-
-    :param date: the datetime value to convert.
-    """
-    return datetime.strftime(date, config.DATE_FORMAT) if date else None
-
-
-def date_to_rfc1123(date):
     """ Converts a datetime value to the corresponding RFC-1123 string.
 
     :param date: the datetime value to convert.
     """
-    return datetime.strftime(date, RFC1123_DATE_FORMAT) if date else None
+    try:
+    #return datetime.strftime(date, config.DATE_FORMAT) if date else None
+         return date.isoformat() if date else None
 
-
+    except Exception:
+        print("The Date Sent Was: "+ date.isoformat())
+        return date.isoformat()
 def home_link():
     """ Returns a link to the API entry point/home page.
-
-    .. versionchanged:: 0.5
-       Link is relative to API root.
 
     .. versionchanged:: 0.0.3
        Now returning a JSON link.
     """
-    return {'title': 'home', 'href': '/'}
+    return {'title': 'home',
+            'href': home_uri()}
+
+
+def home_uri():
+    """ Returns a absolute URI to API home.
+
+    .. versionchanged:: 0.4
+       Added support for URL_PROTOCOL
+       Refactored from home_link
+
+    .. versionchanged:: 0.1.1
+       Handle the case of SERVER_NAME being None.
+
+    .. versionadded:: 0.4
+    """
+    server_name = config.SERVER_NAME if config.SERVER_NAME else ''
+    if config.URL_PROTOCOL:
+        server_name = '%s://%s' % (config.URL_PROTOCOL, server_name)
+    return '%s%s' % (server_name, api_prefix())
+
+
+def resource_uri(resource):
+    """ Returns the absolute URI to a resource.
+
+    .. versionchanged:: 0.1.1
+       URL prefixes are now included in config.URLS items, no more need to
+       explicitly add them to resource links.
+
+       Handle the case of SERVER_NAME being None.
+
+    .. versionchanged:: 0.1.0
+       No more trailing slashes in links.
+
+    :param resource: the resource name.
+    """
+    return '%s/%s' % (home_uri(), config.URLS[resource])
 
 
 def api_prefix(url_prefix=None, api_version=None):
@@ -232,36 +245,23 @@ def api_prefix(url_prefix=None, api_version=None):
 
 
 def querydef(max_results=config.PAGINATION_DEFAULT, where=None, sort=None,
-             version=None, page=None):
+             page=None):
     """ Returns a valid query string.
 
     :param max_results: `max_result` part of the query string. Defaults to
                         `PAGINATION_DEFAULT`
     :param where: `where` part of the query string. Defaults to None.
     :param sort: `sort` part of the query string. Defaults to None.
-    :param page: `version` part of the query string. Defaults to None.
-    :param page: `page` part of the query string. Defaults to None.
-
-    .. versionchanged:: 0.5
-       Support for customizable query parameters.
-       Add version to query string (#475).
+    :param page: `page` parte of the query string. Defaults to None.
     """
-    where_part = '&%s=%s' % (config.QUERY_WHERE, where) if where else ''
-    sort_part = '&%s=%s' % (config.QUERY_SORT, sort) if sort else ''
-    page_part = '&%s=%s' % (config.QUERY_PAGE, page) if page and page > 1 \
-        else ''
-    version_part = '&%s=%s' % (config.VERSION_PARAM, version) if version \
-        else ''
-    max_results_part = '%s=%s' % (config.QUERY_MAX_RESULTS, max_results) \
+    where_part = '&where=%s' % where if where else ''
+    sort_part = '&sort=%s' % sort if sort else ''
+    page_part = '&page=%s' % page if page and page > 1 else ''
+    max_results_part = 'max_results=%s' % max_results \
         if max_results != config.PAGINATION_DEFAULT else ''
 
-    # remove sort set by Eve if version is set
-    if version and sort is not None:
-        sort_part = '&%s=%s' % (config.QUERY_SORT, sort) \
-            if sort != '[("%s", 1)]' % config.VERSION else ''
-
     return ('?' + ''.join([max_results_part, where_part, sort_part,
-                           version_part, page_part]).lstrip('&')).rstrip('?')
+                           page_part]).lstrip('&')).rstrip('?')
 
 
 def document_etag(value):
@@ -327,35 +327,14 @@ def validate_filters(where, resource):
     :param where: the where clause, as a dict.
     :param resource: the resource being inspected.
 
-    .. versionchanged: 0.5
-       If the data layer supports a list of allowed operators, take them
-       into consideration when validating the query string (#388).
-       Recursively validate the whole query string.
-
     .. versionadded: 0.0.9
     """
-    operators = getattr(app.data, 'operators', set())
-    allowed = config.DOMAIN[resource]['allowed_filters'] + list(operators)
-
-    def validate_filter(filters):
-        r = None
-        for d in filters:
-            for key, value in d.items():
-                if key not in allowed:
-                    return "filter on '%s' not allowed" % key
-                if isinstance(value, dict):
-                    r = validate_filter([value])
-                elif isinstance(value, list):
-                    r = validate_filter(value)
-
-                if r:
-                    break
-            if r:
-                break
-
-        return r
-
-    return validate_filter([where]) if '*' not in allowed else None
+    allowed = config.DOMAIN[resource]['allowed_filters']
+    if '*' not in allowed:
+        for filt, _ in where.items():
+            if filt not in allowed:
+                return "filter on '%s' not allowed" % filt
+    return None
 
 
 def auto_fields(resource):
@@ -363,17 +342,13 @@ def auto_fields(resource):
 
     :param resource: the resource currently being accessed by the client.
 
-    .. versionchanged: 0.5
-       ETAG is now a preserved meta data (#369).
-
     .. versionadded:: 0.4
     """
     # preserved meta data
-    fields = [config.ID_FIELD, config.LAST_UPDATED, config.DATE_CREATED,
-              config.ETAG]
+    fields = [config.ID_FIELD, config.LAST_UPDATED, config.DATE_CREATED]
 
     # on-the-fly meta data (not in data store)
-    fields += [config.ISSUES, config.STATUS, config.LINKS]
+    fields += [config.ETAG, config.ISSUES, config.STATUS, config.LINKS]
 
     if config.DOMAIN[resource]['versioning'] is True:
         fields.append(config.VERSION)
@@ -381,6 +356,3 @@ def auto_fields(resource):
         fields.append(config.ID_FIELD + config.VERSION_ID_SUFFIX)
 
     return fields
-
-# Base string type that is compatible with both Python 2.x and 3.x.
-str_type = str if sys.version_info[0] == 3 else basestring
